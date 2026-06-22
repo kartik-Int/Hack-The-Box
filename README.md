@@ -1,5 +1,24 @@
 # Checkpoint
 
+## Checkpoint — Executive Summary
+
+| Phase                    | Details                                                                                                       |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| Initial Access           | Valid credentials for `alex.turner` were provided.                                                            |
+| Enumeration              | LDAP enumeration revealed write permissions over deleted objects and the Employees OU.                        |
+| Privilege Escalation #1  | Restored the deleted user `mark.davies` and authenticated using the known password.                           |
+| Discovery                | Enumerated SMB shares and identified the writable `DevDrop` share used for VS Code extensions.                |
+| Code Execution           | Uploaded a malicious VSIX package containing a PowerShell reverse shell and obtained access as `ryan.brooks`. |
+| Privilege Escalation #2  | Leveraged dMSA abuse to impersonate `svc_deploy` and recover account credentials.                             |
+| Lateral Movement         | Authenticated as `svc_deploy` via WinRM.                                                                      |
+| Sensitive Data Discovery | Identified VMware backup files stored in the `VMBackups` share.                                               |
+| Credential Extraction    | Used VMkatz against a VM memory snapshot to recover the local Administrator NTLM hash.                        |
+| Privilege Escalation #3  | Performed Pass-the-Hash authentication as `Administrator`.                                                    |
+| Objective                | Retrieved the root flag from `C:\Users\max.palmer\Desktop\root.txt`.                                          |
+| Root Flag                | `864d9d13edb008ab521d024ee7f66a14`                                                                            |
+
+
+
 ### **Reconnaissance** <a href="#reconnaissance" id="reconnaissance"></a>
 
 {% code overflow="wrap" %}
@@ -244,7 +263,7 @@ Impacket v0.14.0.dev0 - Copyright Fortra, LLC and its affiliated companies
 ```
 {% endcode %}
 
-<pre class="language-shellscript" data-overflow="wrap"><code class="lang-shellscript">──(kali㉿kali)-[~]
+<pre class="language-shellscript"><code class="lang-shellscript">──(kali㉿kali)-[~]
 └─$ bloodyad -u ryan.brooks -d checkpoint.htb -H DC01.checkpoint.htb -i 10.129.109.27 -k ccache=ryan.brooks.ccache add badSuccessor evil_dmsa -t 'CN=svc_deploy,OU=ServiceAccounts,DC=checkpoint,DC=htb' --ou 'OU=DMSAHolder,DC=checkpoint,DC=htb'
 Clock skew detected. Adjusting local time by 7:03:09.409374. Retrying operation.
 [+] Creating DMSA evil_dmsa$ in OU=DMSAHolder,DC=checkpoint,DC=htb
