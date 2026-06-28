@@ -1,14 +1,10 @@
 ---
-description: 'Difficulty: Medium  | OS: Linux'
+description: 'Difficulty: Easy | OS: Linux'
 ---
 
 # Enigma
 
-## HTB Enigma — Full Writeup
 
-**Difficulty:** Medium\
-**OS:** Linux\
-**IP:** 10.129.30.23
 
 ***
 
