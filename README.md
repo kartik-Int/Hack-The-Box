@@ -113,6 +113,7 @@ WordPress Enumeration → Audio File (jake:CleanLightNiceSmooth4923)
 → Theme Editor RCE → wp-config.php (walter:JbhHDAEgXvri3!)
 → SSH as walter → Port Forward (OCR Service :8001)
 → OCR PHP Payload Generation → Save as PHP → Execute as Root → Root
+```
 
 ---
 
