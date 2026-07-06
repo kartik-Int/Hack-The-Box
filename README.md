@@ -1,9 +1,3 @@
-# Table of contents
-
-* [Checkpoint](README.md)
-* [Enigma](enigma.md)
-
-
 # Hack The Box — Writeups
 
 A collection of Hack The Box machine writeups for learning and reference.
@@ -16,56 +10,80 @@ A collection of Hack The Box machine writeups for learning and reference.
 |---|---------|-----|-----------|----------------|-----------|-----------|
 | 1 | [Enigma](./enigma.md) | Linux | Medium | NFS Enum, IMAP Enum, Zip Filename Injection, OliveTin API Command Injection | ✅ | ✅ |
 | 2 | [Checkpoint](./checkpoint.md) | Windows | Hard | AD Deleted Object Restore, Malicious VSIX, dMSA Abuse, VMware Memory Dump, Pass-the-Hash | ✅ | ✅ |
+| 3 | [MakeSense](./makesense.md) | Linux | Medium | WordPress Enumeration, Stored XSS, Admin Account Creation, Theme Editor RCE, OCR Service Exploitation | ✅ | ✅ |
+---
+
+# Techniques Index
+
+## Reconnaissance
+- Full TCP port scan with Nmap (`-Pn -p- --min-rate 5000`)
+- Service version scan (`-sC -sV`)
+- WordPress enumeration with WPScan
+- NFS enumeration (`nfs-showmount`, `nfs-ls`, `nfs-statfs`)
+- LDAP enumeration with `bloodyAD`
+- IMAP enumeration with `curl imaps://`
+- Upload directory enumeration
 
 ---
 
-## Techniques Index
+## Initial Access / Foothold
+- WordPress username enumeration
+- Audio file credential discovery
+- Stored XSS
+- Administrator account creation via XSS
+- Theme Editor PHP webshell
+- PHP reverse shell
+- NFS share mounting
+- IMAP mailbox enumeration
+- Password reuse
+- Zip filename OS command injection
+- Malicious VS Code Extension (VSIX)
 
-### Reconnaissance
-- Full TCP port scan with Nmap (`-Pn -p- --min-rate 5000`)
-- Service version scan (`-sC -sV`)
-- NFS enumeration (`nfs-showmount`, `nfs-ls`, `nfs-statfs` scripts)
-- LDAP enumeration with `bloodyAD`
-- IMAP enumeration with `curl imaps://`
+---
 
-### Initial Access / Foothold
-- NFS share mounting and sensitive file extraction
-- IMAP mailbox reading for credential discovery
-- Password reuse across accounts
-- Zip filename OS command injection (OpenSTAManager)
-- PHP webshell upload and reverse shell
-- Malicious VS Code extension (VSIX) via writable SMB share
+## Privilege Escalation — Linux
+- WordPress configuration credential extraction
+- Local service enumeration
+- SSH port forwarding
+- OCR service abuse
+- PHP code generation through OCR
+- OliveTin API command injection
+- Hashcat bcrypt cracking (`-m 3200`)
+- SUID `/bin/bash`
+- User lateral movement with `su`
 
-### Privilege Escalation — Linux
-- Bcrypt hash cracking with Hashcat (`-m 3200`) + rockyou.txt
-- `su` lateral movement between users
-- OliveTin API guest execution misconfiguration
-- `password`-type argument injection → shell command injection
-- SUID bit set on `/bin/bash` for root shell
+---
 
-### Privilege Escalation — Windows / Active Directory
-- Deleted AD object restoration with `bloodyAD`
-- Kerberos TGT retrieval with `impacket-getTGT`
-- dMSA badSuccessor abuse for service account impersonation
-- WinRM access with `evil-winrm` (Pass-the-Hash)
-- VMware memory snapshot credential extraction with VMkatz
-- Pass-the-Hash to Administrator
+## Privilege Escalation — Windows / Active Directory
+- Deleted AD object restoration
+- Kerberos TGT retrieval
+- dMSA badSuccessor abuse
+- Pass-the-Hash
+- VMware memory dump credential extraction
+- WinRM authentication
 
-### Tools Used
+---
+
+# Tools Used
+
 | Tool | Purpose |
 |------|---------|
-| `nmap` | Port scanning and service enumeration |
-| `netcat (nc)` | Reverse shell listener |
-| `curl` | HTTP/IMAP interaction |
-| `hashcat` | Offline password cracking |
-| `bloodyAD` | AD LDAP enumeration and exploitation |
-| `nxc (NetExec)` | SMB authentication and share enumeration |
-| `impacket-getTGT` | Kerberos TGT retrieval |
-| `evil-winrm` | WinRM shell with Pass-the-Hash |
-| `smbclient` | SMB file upload/download |
-| `VMkatz` | Credential extraction from VMware memory snapshots |
-| `faketime` | Clock sync for Kerberos attacks |
-| `python3` | Custom exploit scripts (zip injection, base64 payloads) |
+| nmap | Port scanning & service enumeration |
+| wpscan | WordPress enumeration |
+| curl | HTTP / IMAP interaction |
+| ssh | Remote shell & port forwarding |
+| hashcat | Password cracking |
+| ImageMagick | PHP image generation |
+| base64 | Payload encoding |
+| bloodyAD | AD exploitation |
+| NetExec (nxc) | SMB authentication |
+| impacket-getTGT | Kerberos |
+| evil-winrm | WinRM shell |
+| smbclient | SMB interaction |
+| VMkatz | VMware credential extraction |
+| faketime | Kerberos clock synchronization |
+| python3 | Custom exploit scripts |
+
 
 ---
 
@@ -86,6 +104,15 @@ alex.turner creds → LDAP writable objects → Restore mark.davies
 → dMSA badSuccessor → svc_deploy (WinRM) → VMBackups share
 → VMkatz memory dump → Administrator NTLM hash → Pass-the-Hash → root
 ```
+
+## MakeSense (Linux)
+```
+
+WordPress Enumeration → Audio File (jake:CleanLightNiceSmooth4923)
+→ Stored XSS → Administrator Account Creation (pwned)
+→ Theme Editor RCE → wp-config.php (walter:JbhHDAEgXvri3!)
+→ SSH as walter → Port Forward (OCR Service :8001)
+→ OCR PHP Payload Generation → Save as PHP → Execute as Root → Root
 
 ---
 
